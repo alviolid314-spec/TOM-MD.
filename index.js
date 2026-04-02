@@ -1,25 +1,48 @@
-const { default: makeWASocket, useMultiFileAuthState } = require("@whiskeysockets/baileys");
+const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion } = require("@whiskeysockets/baileys");
 const pino = require("pino");
-const config = require("./config");
-const { aiReply } = require("./lib/ai");
-const { antiLink } = require("./lib/security");
-const { addCoins } = require("./lib/economy");
-
-let spamTracker = {};
+const readline = require("readline");
 
 async function startBot() {
 
     const { state, saveCreds } = await useMultiFileAuthState("./session");
 
+    const { version } = await fetchLatestBaileysVersion();
+
     const sock = makeWASocket({
+        version,
         logger: pino({ level: "silent" }),
         auth: state
     });
 
     sock.ev.on("creds.update", saveCreds);
 
-    sock.ev.on("messages.upsert", async ({ messages }) => {
+    // 📱 Pairing Code Login
+    if (!sock.authState.creds.registered) {
 
+        const rl = readline.createInterface({
+            input: process.stdin,
+            output: process.stdout
+        });
+
+        rl.question("📱 Enter your WhatsApp number (with country code): ", async (number) => {
+
+            let code = await sock.requestPairingCode(number);
+            console.log(`\n🔑 Your Pairing Code: ${code}\n`);
+            console.log("👉 Open WhatsApp > Linked Devices > Link with code");
+
+            rl.close();
+        });
+    }
+
+    sock.ev.on("connection.update", (update) => {
+        const { connection } = update;
+
+        if (connection === "open") {
+            console.log("✅ Rahi Bot Connected with Pairing Code!");
+        }
+    });
+
+    sock.ev.on("messages.upsert", async ({ messages }) => {
         const m = messages[0];
         if (!m.message) return;
 
@@ -27,14 +50,14 @@ async function startBot() {
         if (!text) return;
 
         const from = m.key.remoteJid;
-        const sender = m.key.participant || from;
 
-        // Spam tracker
-        spamTracker[sender] = (spamTracker[sender] || 0) + 1;
+        if (text === "hi") {
+            await sock.sendMessage(from, { text: "👋 Rahi Bot is alive (Pairing Mode)" });
+        }
+    });
+}
 
-        // Security
-        await antiLink(sock, m, text, config);
-
+startBot();
         // Economy reward
         addCoins(sender, 1);
 
